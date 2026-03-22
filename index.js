@@ -1,6 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { MongoClient } = require('mongodb');
+const http = require('http');
 
 // Environment Variables
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -8,6 +9,16 @@ const siteApiToken = process.env.SITE_BOT_API_TOKEN;
 const siteUrl = process.env.SITE_URL || 'https://tmovie.in'; 
 const mongoUri = process.env.MONGODB_URI;
 const adminTgId = process.env.ADMIN_TG_ID;
+const port = process.env.PORT || 5050; // Added port for Koyeb health check
+
+// This simple server is for Koyeb/Render health checks
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.write('Bot is running');
+    res.end();
+}).listen(port, () => {
+    console.log(`Health check server is listening on port ${port}`);
+});
 
 if (!token || !siteApiToken || !mongoUri || !adminTgId) {
     console.error("Missing required environment variables. Please check your .env file.");
@@ -170,6 +181,26 @@ https://t.me/+TYFPD96hMqU1NTRl
 
             return bot.sendMessage(chatId, promoMsg, { disable_web_page_preview: true });
         }
+    }
+
+    // COMMAND: /help
+    if (text.startsWith('/help')) {
+        if (!isAdmin) return;
+        
+        const helpMsg = `📖 **TMovie Bot Admin Help**
+
+Here are the commands available for you:
+
+• \`/start\` - View admin dashboard, total users, and bot uptime.
+• \`/broadcast\` - Send a message to ALL users. 
+  *(Usage: Reply to any message you want to send with /broadcast)*
+• \`/adddomain [domain]\` - Add a domain to the allowed list (e.g., \`/adddomain google.com\`).
+• \`/allowdomain\` - View the list of all whitelisted domains.
+• \`/help\` - Show this help menu.
+
+⚠️ **Note:** These commands are only accessible to the bot admin.`;
+
+        return bot.sendMessage(chatId, helpMsg, { parse_mode: "Markdown" });
     }
 
     // COMMAND: /broadcast
