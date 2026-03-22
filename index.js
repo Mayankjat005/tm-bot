@@ -146,8 +146,8 @@ bot.on('message', async (msg) => {
 You have Admin Access to manage the bot.
 
 ⚙️ Admin Controls:
-• Broadcast Message (/broadcast replying to a message)
-• Manage Domains (/adddomain, /allowdomain)
+• Manage Domains (/adddomain, /removedomain, /allowdomain)
+• Chat Management (/clearchat, /lockchat, /unlockchat)
 
 📊 Bot Status:
 Users: ${totalUsers}
@@ -165,7 +165,7 @@ Uptime: Active ✅ (${uptime})`;
 https://t.me/+D4copzHym8Q4ZDM9
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-🎯 𝗥𝗘𝗤𝗨𝗘𝗦𝗧 𝗔𝗡𝗬 𝗠𝗢𝗩𝗜𝗘 / 𝗦𝗘𝗥𝗜𝗘𝗦
+🎯 磐𝗘𝗤𝗨𝗘𝗦𝗧 𝗔𝗡𝗬 𝗠𝗢𝗩𝗜𝗘 / 𝗦𝗘𝗥𝗜𝗘𝗦
 💬 Send Your Requests Anytime
 👇👇 JOIN NOW 👇👇
 https://t.me/+TYFPD96hMqU1NTRl
@@ -191,16 +191,121 @@ https://t.me/+TYFPD96hMqU1NTRl
 
 Here are the commands available for you:
 
-• \`/start\` - View admin dashboard, total users, and bot uptime.
-• \`/broadcast\` - Send a message to ALL users. 
-  *(Usage: Reply to any message you want to send with /broadcast)*
-• \`/adddomain [domain]\` - Add a domain to the allowed list (e.g., \`/adddomain google.com\`).
-• \`/allowdomain\` - View the list of all whitelisted domains.
-• \`/help\` - Show this help menu.
+📢 **User Management**
+• \`/broadcast\` - *Use Case:* To send announcements or promotional messages to ALL users who have started the bot. (Reply to the message you want to broadcast).
 
-⚠️ **Note:** These commands are only accessible to the bot admin.`;
+🛑 **Anti-Spam (Domain List)**
+• \`/adddomain [domain]\` - *Use Case:* Whitelist a domain (like google.com) so its links are NOT deleted by the bot.
+• \`/removedomain\` - *Use Case:* Remove a domain from whitelist so the bot starts deleting those links again.
+• \`/allowdomain\` - *Use Case:* Check all currently whitelisted domains.
+
+🛠️ **Group Management**
+• \`/clearchat\` - *Use Case:* To quickly delete the last 100 messages and clean up the group.
+• \`/lockchat\` - *Use Case:* Restrict the group so ONLY Admins can send messages.
+• \`/unlockchat\` - *Use Case:* Allow all members to send messages again.
+
+📊 **Stats**
+• \`/start\` - *Use Case:* View the Admin Dashboard, total user count, and bot uptime.
+• \`/help\` - *Use Case:* Show this detailed help guide.
+
+⚠️ **Note:** These commands are strictly restricted to the bot owner and group admins.`;
 
         return bot.sendMessage(chatId, helpMsg, { parse_mode: "Markdown" });
+    }
+
+    // COMMAND: /clearchat
+    if (text === '/clearchat') {
+        if (!isAdmin) return;
+        
+        const targetMessageId = msg.message_id;
+        let deletedCount = 0;
+        
+        bot.sendMessage(chatId, "🧹 Clearing chat... (Last 100 messages)").then(async (statusMsg) => {
+            for (let i = 0; i < 100; i++) {
+                try {
+                    await bot.deleteMessage(chatId, targetMessageId - i);
+                    deletedCount++;
+                } catch (e) {
+                    // Ignore errors for messages already deleted or too old
+                }
+            }
+            bot.sendMessage(chatId, `✅ Successfully cleared ${deletedCount} messages.`);
+        });
+        return;
+    }
+
+    // COMMAND: /lockchat
+    if (text === '/lockchat') {
+        if (!isAdmin) return;
+
+        try {
+            const chat = await bot.getChat(chatId);
+            // Permissions check - if can_send_messages is false, it's already locked for members
+            if (chat.permissions && chat.permissions.can_send_messages === false) {
+                return bot.sendMessage(chatId, "Chat Already Locked", { reply_to_message_id: msg.message_id });
+            }
+
+            await bot.setChatPermissions(chatId, {
+                can_send_messages: false,
+                can_send_media_messages: false,
+                can_send_polls: false,
+                can_send_other_messages: false,
+                can_add_web_page_previews: false,
+                can_change_info: false,
+                can_invite_users: false,
+                can_pin_messages: false
+            });
+            return bot.sendMessage(chatId, "🔒 Chat is now LOCKED for members.");
+        } catch (e) {
+            console.error("Lock error:", e);
+            return bot.sendMessage(chatId, "⚠️ Failed to lock chat. Make sure bot is an Admin.");
+        }
+    }
+
+    // COMMAND: /unlockchat
+    if (text === '/unlockchat') {
+        if (!isAdmin) return;
+
+        try {
+            const chat = await bot.getChat(chatId);
+            if (chat.permissions && chat.permissions.can_send_messages === true) {
+                return bot.sendMessage(chatId, "Chat Already Unlocked", { reply_to_message_id: msg.message_id });
+            }
+
+            await bot.setChatPermissions(chatId, {
+                can_send_messages: true,
+                can_send_media_messages: true,
+                can_send_polls: true,
+                can_send_other_messages: true,
+                can_add_web_page_previews: true,
+                can_invite_users: true
+            });
+            return bot.sendMessage(chatId, "🔓 Chat is now UNLOCKED for everyone.");
+        } catch (e) {
+            console.error("Unlock error:", e);
+            return bot.sendMessage(chatId, "⚠️ Failed to unlock chat.");
+        }
+    }
+
+    // COMMAND: /removedomain
+    if (text === '/removedomain') {
+        if (!isAdmin) return;
+        
+        const domains = await allowedDomainsCollection.find({}).toArray();
+        if (domains.length === 0) {
+            return bot.sendMessage(chatId, "No domains are currently allowed to remove.");
+        }
+
+        const keyboard = domains.map(d => ([{
+            text: `❌ ${d.domain}`,
+            callback_data: `remove_domain:${d.domain}`
+        }]));
+
+        return bot.sendMessage(chatId, "Select a domain to remove from whitelisted list:", {
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        });
     }
 
     // COMMAND: /broadcast
@@ -340,6 +445,39 @@ Here are the commands available for you:
             `Here is the link for ${matchedItem.name}:\n${matchedItem.url}`, 
             { reply_to_message_id: msg.message_id }
         );
+    }
+});
+
+// Callback Query Handler for Domain Removal
+bot.on('callback_query', async (query) => {
+    const data = query.data;
+    const chatId = query.message.chat.id;
+    const userId = query.from.id;
+
+    if (data.startsWith('remove_domain:')) {
+        // Admin verification again
+        const isAdmin = await isUserAdmin(chatId, userId);
+        if (!isAdmin) {
+            return bot.answerCallbackQuery(query.id, { text: "⚠️ Unauthorized", show_alert: true });
+        }
+
+        const domain = data.split(':')[1];
+        try {
+            const result = await allowedDomainsCollection.deleteOne({ domain });
+            if (result.deletedCount > 0) {
+                await bot.answerCallbackQuery(query.id, { text: "Domain Remove Successfully" });
+                await bot.editMessageText(`✅ **${domain}** removed successfully.`, {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    parse_mode: "Markdown"
+                });
+            } else {
+                await bot.answerCallbackQuery(query.id, { text: "Domain not found", show_alert: true });
+            }
+        } catch (e) {
+            console.error("Error removing domain:", e);
+            await bot.answerCallbackQuery(query.id, { text: "Error deleting domain", show_alert: true });
+        }
     }
 });
 
