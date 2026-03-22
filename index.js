@@ -33,6 +33,10 @@ const client = new MongoClient(mongoUri);
 let db;
 let allowedDomainsCollection;
 let usersCollection;
+let settingsCollection;
+
+// Auto Request State (in-memory, loaded from DB on startup)
+let autoRequestEnabled = false;
 
 async function connectMongo() {
     try {
@@ -40,7 +44,12 @@ async function connectMongo() {
         db = client.db('tmovie_bot');
         allowedDomainsCollection = db.collection('allowed_domains');
         usersCollection = db.collection('users');
-        console.log("Connected to MongoDB successfully.");
+        settingsCollection = db.collection('settings');
+        
+        // Load auto-request setting from DB
+        const setting = await settingsCollection.findOne({ key: 'auto_request' });
+        if (setting) autoRequestEnabled = setting.enabled;
+        console.log(`Connected to MongoDB successfully. Auto-Request: ${autoRequestEnabled ? 'ON' : 'OFF'}`);
     } catch (err) {
         console.error("Failed to connect to MongoDB", err);
         process.exit(1);
@@ -148,6 +157,7 @@ You have Admin Access to manage the bot.
 ⚙️ Admin Controls:
 • Manage Domains (/adddomain, /removedomain, /allowdomain)
 • Chat Management (/clearchat, /lockchat, /unlockchat)
+• Auto Request (/autorequest) - ${autoRequestEnabled ? '🟢 ON' : '🔴 OFF'}
 
 📊 Bot Status:
 Users: ${totalUsers}
@@ -192,23 +202,26 @@ https://t.me/+TYFPD96hMqU1NTRl
 Here are the commands available for you:
 
 📢 **User Management**
-• \`/broadcast\` - *Use Case:* To send announcements or promotional messages to ALL users who have started the bot. (Reply to the message you want to broadcast).
+• \`/broadcast\` - *Use Case:* Send announcements to ALL users. (Reply to a message with /broadcast).
 
 🛑 **Anti-Spam (Domain List)**
-• \`/adddomain [domain]\` - *Use Case:* Whitelist a domain (like google.com) so its links are NOT deleted by the bot.
-• \`/removedomain\` - *Use Case:* Remove a domain from whitelist so the bot starts deleting those links again.
-• \`/allowdomain\` - *Use Case:* Check all currently whitelisted domains.
+• \`/adddomain [domain]\` - *Use Case:* Whitelist a domain so its links are NOT deleted.
+• \`/removedomain\` - *Use Case:* Remove a domain from whitelist.
+• \`/allowdomain\` - *Use Case:* Check all whitelisted domains.
 
 🛠️ **Group Management**
-• \`/clearchat\` - *Use Case:* To quickly delete the last 100 messages and clean up the group.
-• \`/lockchat\` - *Use Case:* Restrict the group so ONLY Admins can send messages.
-• \`/unlockchat\` - *Use Case:* Allow all members to send messages again.
+• \`/clearchat\` - *Use Case:* Delete last 100 messages in a group.
+• \`/lockchat\` - *Use Case:* Restrict group to Admin Only messaging.
+• \`/unlockchat\` - *Use Case:* Allow everyone to send messages.
+
+🤖 **Auto Request**
+• \`/autorequest\` - *Use Case:* Toggle auto-approve for join requests. When ON, bot auto-approves all join requests, saves users to DB, and sends them a welcome DM. Also shows all channels/groups where bot is admin.
 
 📊 **Stats**
-• \`/start\` - *Use Case:* View the Admin Dashboard, total user count, and bot uptime.
-• \`/help\` - *Use Case:* Show this detailed help guide.
+• \`/start\` - *Use Case:* View Admin Dashboard and bot uptime.
+• \`/help\` - *Use Case:* Show this guide.
 
-⚠️ **Note:** These commands are strictly restricted to the bot owner and group admins.`;
+⚠️ **Note:** Admin only commands.`;
 
         return bot.sendMessage(chatId, helpMsg, { parse_mode: "Markdown" });
     }
@@ -307,6 +320,24 @@ Here are the commands available for you:
         return bot.sendMessage(chatId, "Select a domain to remove from whitelisted list:", {
             reply_markup: {
                 inline_keyboard: keyboard
+            }
+        });
+    }
+
+    // COMMAND: /autorequest
+    if (text === '/autorequest') {
+        if (!isAdmin) return;
+
+        const statusText = autoRequestEnabled ? '🟢 Currently: ON' : '🔴 Currently: OFF';
+        return bot.sendMessage(chatId, `🤖 **Auto Request Approve System**\n\n${statusText}\n\nSelect an option:`, {
+            parse_mode: "Markdown",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "✅ Auto Request ON", callback_data: "autoreq_on" }],
+                    [{ text: "❌ Auto Request OFF", callback_data: "autoreq_off" }],
+                    [{ text: "📋 All Channels & Groups", callback_data: "autoreq_list" }],
+                    [{ text: "◀️ Cancel", callback_data: "autoreq_cancel" }]
+                ]
             }
         });
     }
@@ -451,13 +482,14 @@ Here are the commands available for you:
     }
 });
 
-// Callback Query Handler for Domain Removal
+// Callback Query Handler
 bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
     const userId = query.from.id;
 
-    if (data === 'cancel_remove') {
+    // --- Cancel Buttons ---
+    if (data === 'cancel_remove' || data === 'autoreq_cancel') {
         try {
             await bot.deleteMessage(chatId, query.message.message_id);
             return bot.answerCallbackQuery(query.id, { text: "Action Cancelled" });
@@ -466,8 +498,8 @@ bot.on('callback_query', async (query) => {
         }
     }
 
+    // --- Domain Removal ---
     if (data.startsWith('remove_domain:')) {
-        // Admin verification again
         const isAdmin = await isUserAdmin(chatId, userId);
         if (!isAdmin) {
             return bot.answerCallbackQuery(query.id, { text: "⚠️ Unauthorized", show_alert: true });
@@ -490,6 +522,171 @@ bot.on('callback_query', async (query) => {
             console.error("Error removing domain:", e);
             await bot.answerCallbackQuery(query.id, { text: "Error deleting domain", show_alert: true });
         }
+    }
+
+    // --- Auto Request ON ---
+    if (data === 'autoreq_on') {
+        const isAdmin = await isUserAdmin(chatId, userId);
+        if (!isAdmin) return bot.answerCallbackQuery(query.id, { text: "⚠️ Unauthorized", show_alert: true });
+
+        autoRequestEnabled = true;
+        await settingsCollection.updateOne({ key: 'auto_request' }, { $set: { key: 'auto_request', enabled: true } }, { upsert: true });
+        await bot.answerCallbackQuery(query.id, { text: "Auto Request is now ON" });
+        return bot.editMessageText(`🤖 **Auto Request Approve System**\n\n🟢 Status: **ON**\n\nBot will now auto-approve all pending join requests and send a welcome DM to new users.`, {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            parse_mode: "Markdown"
+        });
+    }
+
+    // --- Auto Request OFF ---
+    if (data === 'autoreq_off') {
+        const isAdmin = await isUserAdmin(chatId, userId);
+        if (!isAdmin) return bot.answerCallbackQuery(query.id, { text: "⚠️ Unauthorized", show_alert: true });
+
+        autoRequestEnabled = false;
+        await settingsCollection.updateOne({ key: 'auto_request' }, { $set: { key: 'auto_request', enabled: false } }, { upsert: true });
+        await bot.answerCallbackQuery(query.id, { text: "Auto Request is now OFF" });
+        return bot.editMessageText(`🤖 **Auto Request Approve System**\n\n🔴 Status: **OFF**\n\nBot will NOT auto-approve join requests anymore.`, {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            parse_mode: "Markdown"
+        });
+    }
+
+    // --- All Channels & Groups List ---
+    if (data === 'autoreq_list') {
+        const isAdmin = await isUserAdmin(chatId, userId);
+        if (!isAdmin) return bot.answerCallbackQuery(query.id, { text: "⚠️ Unauthorized", show_alert: true });
+
+        await bot.answerCallbackQuery(query.id, { text: "Fetching list..." });
+
+        // We get bot's admin channels from the updates it has received (stored in DB)
+        // Since Telegram API doesn't provide a direct "list my chats" for bots,
+        // we track chats where bot receives messages.
+        try {
+            // Get unique chats the bot has interacted with from the users collection
+            // We search for group/supergroup/channel chats tracked in a separate collection
+            let botChatsCollection = db.collection('bot_chats');
+            const chats = await botChatsCollection.find({}).toArray();
+
+            if (chats.length === 0) {
+                return bot.editMessageText(`📋 **All Channels & Groups**\n\nNo channels or groups tracked yet. Bot will start tracking once it receives messages in groups/channels.`, {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    parse_mode: "Markdown"
+                });
+            }
+
+            let listText = `📋 **All Channels & Groups where Bot is active:**\n\n`;
+            for (const c of chats) {
+                const link = c.username ? `https://t.me/${c.username}` : '(Private - No Link)';
+                const typeIcon = c.type === 'channel' ? '📢' : '👥';
+                listText += `${typeIcon} **${c.title}** - ${link}\n`;
+            }
+
+            return bot.editMessageText(listText, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                parse_mode: "Markdown",
+                disable_web_page_preview: true
+            });
+        } catch (e) {
+            console.error("Error fetching bot chats:", e);
+            return bot.editMessageText(`❌ Error fetching channels list.`, {
+                chat_id: chatId,
+                message_id: query.message.message_id
+            });
+        }
+    }
+});
+
+// --- Track Bot's Groups/Channels for /autorequest "All Channels" feature ---
+bot.on('message', async (msg) => {
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup' || msg.chat.type === 'channel') {
+        try {
+            const botChatsCollection = db.collection('bot_chats');
+            await botChatsCollection.updateOne(
+                { chatId: msg.chat.id },
+                { $set: {
+                    chatId: msg.chat.id,
+                    title: msg.chat.title,
+                    type: msg.chat.type,
+                    username: msg.chat.username || null,
+                    lastSeen: new Date()
+                }},
+                { upsert: true }
+            );
+        } catch (e) {
+            // Silently ignore tracking errors
+        }
+    }
+});
+
+// --- Auto Request Approve: chat_join_request Event ---
+bot.on('chat_join_request', async (request) => {
+    if (!autoRequestEnabled) return;
+
+    const reqChatId = request.chat.id;
+    const reqUserId = request.from.id;
+    const firstName = request.from.first_name || '';
+    const username = request.from.username || null;
+
+    try {
+        // Approve the join request
+        await bot.approveChatJoinRequest(reqChatId, reqUserId);
+        console.log(`Auto-approved join request from ${firstName} (${reqUserId}) in ${request.chat.title}`);
+
+        // Save user to MongoDB
+        await usersCollection.updateOne(
+            { userId: reqUserId },
+            {
+                $set: {
+                    userId: reqUserId,
+                    firstName: firstName,
+                    username: username,
+                    lastActive: new Date(),
+                    joinedVia: request.chat.title
+                },
+                $setOnInsert: { joinedAt: new Date() }
+            },
+            { upsert: true }
+        );
+
+        // Send Welcome DM to the user
+        const welcomeDM = `🚨🔥 This is 𝗕𝗔𝗖𝗞𝗨𝗣 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 — 𝗠𝗨𝗦𝗧 𝗝𝗢𝗜𝗡 🔥🚨
+🎬 Movies • 📺 Series • ⚡️ Instant Updates • 🎯 Requests
+
+━━━━━━━━━━━━━━━━━━━━━━━
+📢 𝗟𝗔𝗧𝗘𝗦𝗧 𝗨𝗣𝗗𝗔𝗧𝗘𝗦 𝗖𝗛𝗔𝗡𝗡𝗘𝗟
+🚀 New Movies & Series First Here
+👇👇 JOIN NOW 👇👇
+https://t.me/+D4copzHym8Q4ZDM9
+
+━━━━━━━━━━━━━━━━━━━━━━━
+🎯 𝗥𝗘𝗤𝗨𝗘𝗦𝗧 𝗔𝗡𝗬 𝗠𝗢𝗩𝗜𝗘 / 𝗦𝗘𝗥𝗜𝗘𝗦
+💬 Send Your Requests Anytime
+👇👇 JOIN NOW 👇👇
+https://t.me/+TYFPD96hMqU1NTRl
+
+━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ Backup Channel — Don't Miss Updates
+🔥 Fast Uploads
+🍿 HD Movies & Web Series
+📥 Direct Links
+🚀 Daily Updates
+
+💀 Join Fast Before Links Get Removed!`;
+
+        try {
+            await bot.sendMessage(reqUserId, welcomeDM, { disable_web_page_preview: true });
+        } catch (dmErr) {
+            // User may have not started the bot, can't send DM
+            console.log(`Could not DM user ${reqUserId}: ${dmErr.message}`);
+        }
+
+    } catch (err) {
+        console.error(`Failed to approve join request for ${reqUserId}:`, err.message);
     }
 });
 
