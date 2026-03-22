@@ -301,6 +301,9 @@ Here are the commands available for you:
             callback_data: `remove_domain:${d.domain}`
         }]));
 
+        // Add Cancel Button
+        keyboard.push([{ text: "◀️ Cancel", callback_data: "cancel_remove" }]);
+
         return bot.sendMessage(chatId, "Select a domain to remove from whitelisted list:", {
             reply_markup: {
                 inline_keyboard: keyboard
@@ -453,6 +456,15 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
     const userId = query.from.id;
+
+    if (data === 'cancel_remove') {
+        try {
+            await bot.deleteMessage(chatId, query.message.message_id);
+            return bot.answerCallbackQuery(query.id, { text: "Action Cancelled" });
+        } catch (e) {
+            return bot.answerCallbackQuery(query.id);
+        }
+    }
 
     if (data.startsWith('remove_domain:')) {
         // Admin verification again
