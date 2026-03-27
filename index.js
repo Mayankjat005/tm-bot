@@ -57,8 +57,14 @@ async function connectMongo() {
 }
 connectMongo();
 
-// Create a bot that uses 'polling' to fetch new updates
-const bot = new TelegramBot(token, { polling: true });
+// Create a bot and explicitly allow chat_join_request updates
+const bot = new TelegramBot(token, { 
+    polling: {
+        params: {
+            allowed_updates: ["message", "callback_query", "chat_join_request"]
+        }
+    }
+});
 
 // Cache for movies and series
 let catalogCache = [];
@@ -121,19 +127,18 @@ bot.on('message', async (msg) => {
     const userId = msg.from.id;
     const text = msg.text || "";
 
-    // Save/Update User in DB
+    // Save User in DB (only if not already exists)
     try {
         if (msg.from && !msg.from.is_bot) {
             await usersCollection.updateOne(
                 { userId },
                 { 
-                    $set: { 
+                    $setOnInsert: { 
                         userId, 
                         firstName: msg.from.first_name, 
                         username: msg.from.username,
-                        lastActive: new Date() 
-                    },
-                    $setOnInsert: { joinedAt: new Date() }
+                        joinedAt: new Date() 
+                    }
                 },
                 { upsert: true }
             );
@@ -625,30 +630,34 @@ bot.on('message', async (msg) => {
 
 // --- Auto Request Approve: chat_join_request Event ---
 bot.on('chat_join_request', async (request) => {
-    if (!autoRequestEnabled) return;
-
     const reqChatId = request.chat.id;
     const reqUserId = request.from.id;
     const firstName = request.from.first_name || '';
     const username = request.from.username || null;
 
+    console.log(`[JOIN REQUEST] User: ${firstName} (${reqUserId}) in Chat: ${request.chat.title}`);
+
+    if (!autoRequestEnabled) {
+        console.log(`[JOIN REQUEST] Skipping approval for ${reqUserId} because Auto-Request is OFF.`);
+        return;
+    }
+
     try {
         // Approve the join request
         await bot.approveChatJoinRequest(reqChatId, reqUserId);
-        console.log(`Auto-approved join request from ${firstName} (${reqUserId}) in ${request.chat.title}`);
+        console.log(`[JOIN REQUEST] ✅ Approved: ${firstName} (${reqUserId})`);
 
-        // Save user to MongoDB
+        // Save user to MongoDB (only if not already exists)
         await usersCollection.updateOne(
             { userId: reqUserId },
             {
-                $set: {
+                $setOnInsert: {
                     userId: reqUserId,
                     firstName: firstName,
                     username: username,
-                    lastActive: new Date(),
+                    joinedAt: new Date(),
                     joinedVia: request.chat.title
-                },
-                $setOnInsert: { joinedAt: new Date() }
+                }
             },
             { upsert: true }
         );
