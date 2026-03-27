@@ -61,7 +61,7 @@ connectMongo();
 const bot = new TelegramBot(token, { 
     polling: {
         params: {
-            allowed_updates: ["message", "callback_query", "chat_join_request"]
+            allowed_updates: ["message", "callback_query", "chat_join_request", "my_chat_member"]
         }
     }
 });
@@ -607,8 +607,42 @@ bot.on('callback_query', async (query) => {
 });
 
 // --- Track Bot's Groups/Channels for /autorequest "All Channels" feature ---
+// This is the BEST way to track which chats the bot is in
+bot.on('my_chat_member', async (update) => {
+    const chat = update.chat;
+    const status = update.new_chat_member.status;
+
+    try {
+        const botChatsCollection = db.collection('bot_chats');
+        
+        if (status === 'administrator' || status === 'creator' || status === 'member') {
+            // Bot was added or promoted
+            await botChatsCollection.updateOne(
+                { chatId: chat.id },
+                { $set: {
+                    chatId: chat.id,
+                    title: chat.title,
+                    type: chat.type,
+                    username: chat.username || null,
+                    status: status,
+                    lastUpdated: new Date()
+                }},
+                { upsert: true }
+            );
+            console.log(`[TRACK] Bot is active in ${chat.type}: ${chat.title}`);
+        } else if (status === 'left' || status === 'kicked') {
+            // Bot was removed
+            await botChatsCollection.deleteOne({ chatId: chat.id });
+            console.log(`[TRACK] Bot was removed from ${chat.type}: ${chat.title}`);
+        }
+    } catch (e) {
+        console.error("Error in my_chat_member tracking:", e);
+    }
+});
+
+// Also keep message-based tracking as a backup for existing chats
 bot.on('message', async (msg) => {
-    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup' || msg.chat.type === 'channel') {
+    if (msg.chat && (msg.chat.type === 'group' || msg.chat.type === 'supergroup' || msg.chat.type === 'channel')) {
         try {
             const botChatsCollection = db.collection('bot_chats');
             await botChatsCollection.updateOne(
@@ -622,9 +656,7 @@ bot.on('message', async (msg) => {
                 }},
                 { upsert: true }
             );
-        } catch (e) {
-            // Silently ignore tracking errors
-        }
+        } catch (e) {}
     }
 });
 
